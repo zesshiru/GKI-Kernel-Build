@@ -3,8 +3,15 @@ name: Build GKI 6.6.77 + Droidspace
 on:
   workflow_dispatch:
     inputs:
+      diagnostic_only:
+        description: 'true = cuma cari commit SUBLEVEL 77, gak lanjut build'
+        type: boolean
+        default: true
+      kernel_branch:
+        description: 'Branch ACK (dipakai kalau diagnostic_only = false)'
+        default: 'android15-6.6'
       kernel_commit:
-        description: 'Commit hash ACK persis (dari KMI device)'
+        description: 'Commit hash ACK persis (isi setelah ketemu dari diagnostic)'
         default: 'f9a1d4bd8353'
       kabi_patch:
         description: 'Nama file patch kABI di folder patches/'
@@ -23,36 +30,72 @@ jobs:
           sudo apt-get install -y bc bison flex libssl-dev libelf-dev \
             build-essential python3 python3-pip
 
-      - name: Clone branch and checkout exact commit
+      # ============================================
+      # MODE DIAGNOSTIC: cari commit lewat isi Makefile
+      # ============================================
+      - name: Clone full ACK repo (all branches)
+        if: ${{ github.event.inputs.diagnostic_only == 'true' }}
+        run: git clone https://android.googlesource.com/kernel/common kernel_src
+
+      - name: Find commit that set SUBLEVEL = 77
+        if: ${{ github.event.inputs.diagnostic_only == 'true' }}
         run: |
-          git clone --branch android15-6.6 --single-branch \
+          cd kernel_src
+          echo "=== Commit yang set SUBLEVEL = 77 ==="
+          git log --all --oneline -S"SUBLEVEL = 77" -- Makefile | tee ../found_commits.txt
+          echo ""
+          echo "=== Branch yang mengandung tiap commit itu ==="
+          while read -r hash rest; do
+            echo "--- Commit $hash ---"
+            git branch --all --contains "$hash"
+          done < ../found_commits.txt
+
+      - name: Stop here (diagnostic mode)
+        if: ${{ github.event.inputs.diagnostic_only == 'true' }}
+        run: |
+          echo "Diagnostic selesai. Cek log step di atas, catat commit hash yang valid,"
+          echo "lalu jalankan ulang workflow ini dengan diagnostic_only=false dan kernel_commit=<hash tadi>."
+          exit 0
+
+      # ============================================
+      # MODE BUILD: jalan kalau diagnostic_only = false
+      # ============================================
+      - name: Clone branch and checkout exact commit
+        if: ${{ github.event.inputs.diagnostic_only == 'false' }}
+        run: |
+          git clone --branch ${{ github.event.inputs.kernel_branch }} --single-branch \
             https://android.googlesource.com/kernel/common kernel_src
           cd kernel_src
           git checkout ${{ github.event.inputs.kernel_commit }} || {
-            echo "Commit not in this branch history, trying full unshallow..."
+            echo "Commit tidak ada di shallow history branch ini, coba unshallow..."
             git fetch --unshallow
             git checkout ${{ github.event.inputs.kernel_commit }}
           }
 
       - name: Apply Droidspace kABI patch
+        if: ${{ github.event.inputs.diagnostic_only == 'false' }}
         run: |
           cd kernel_src
           patch -p1 < ../patches/${{ github.event.inputs.kabi_patch }}
 
       - name: Merge Droidspace config into gki_defconfig
+        if: ${{ github.event.inputs.diagnostic_only == 'false' }}
         run: |
           cat configs/droidspace.fragment >> kernel_src/arch/arm64/configs/gki_defconfig
 
       - name: Build kernel
+        if: ${{ github.event.inputs.diagnostic_only == 'false' }}
         run: |
           cd kernel_src
           tools/bazel build --config=fast //common:kernel_aarch64_dist
 
       - name: Locate build output
+        if: ${{ github.event.inputs.diagnostic_only == 'false' }}
         run: |
           find kernel_src/bazel-bin -maxdepth 6 -iname "Image" -o -iname "Image.gz" | tee found_outputs.txt
 
       - name: Upload Image artifact
+        if: ${{ github.event.inputs.diagnostic_only == 'false' }}
         uses: actions/upload-artifact@v4
         with:
           name: kernel-image-${{ github.event.inputs.kernel_commit }}
