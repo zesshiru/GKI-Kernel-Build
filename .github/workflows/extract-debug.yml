@@ -1,0 +1,98 @@
+name: Extract Kernel Config
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download existing debug artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p extracted
+
+          echo "Mencari artifact lama..."
+
+          ARTIFACT_ID=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${{ github.repository }}/actions/artifacts?per_page=100" \
+            --jq '.artifacts[]
+              | select(.name == "kernel-build-debug-6.6.77-droidspace")
+              | select(.expired == false)
+              | .id' \
+            | head -n 1)
+
+          if [ -z "$ARTIFACT_ID" ]; then
+            echo "ERROR: artifact kernel-build-debug-6.6.77-droidspace tidak ditemukan!"
+            exit 1
+          fi
+
+          echo "Artifact ID: $ARTIFACT_ID"
+
+          echo "Download artifact ke runner GitHub..."
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${{ github.repository }}/actions/artifacts/${ARTIFACT_ID}/zip" \
+            > debug.zip
+
+          echo "Extract artifact..."
+          unzip -q debug.zip -d extracted
+
+          echo
+          echo "=== Isi artifact ==="
+          find extracted -type f -printf '%p %s bytes\n'
+
+      - name: Find kernel config
+        run: |
+          mkdir -p output
+
+          CONFIG=$(find extracted -type f \
+            \( -name ".config" -o -name "config" \) \
+            | head -n 1)
+
+          if [ -z "$CONFIG" ]; then
+            echo "ERROR: .config tidak ditemukan!"
+            echo
+            echo "File yang tersedia:"
+            find extracted -type f
+            exit 1
+          fi
+
+          echo "Config ditemukan:"
+          echo "$CONFIG"
+
+          cp "$CONFIG" output/kernel.config
+
+      - name: Show important configs
+        run: |
+          echo
+          echo "========================================"
+          echo " DROIDSPACES / MODULE CONFIG"
+          echo "========================================"
+
+          grep -E \
+            'CONFIG_(SYSVIPC|POSIX_MQUEUE|IPC_NS|PID_NS|DEVTMPFS|NETFILTER_XT_MATCH_ADDRTYPE|NETFILTER_XT_TARGET_REJECT|NETFILTER_XT_TARGET_LOG|NETFILTER_XT_MATCH_RECENT|IP_SET|IP_SET_HASH_IP|IP_SET_HASH_NET|NETFILTER_XT_SET|TMPFS_POSIX_ACL|TMPFS_XATTR|MODULE_SIG|LTO)' \
+            output/kernel.config || true
+
+          echo
+          echo "========================================"
+          echo " KERNEL RELEASE"
+          echo "========================================"
+
+          grep -E \
+            'CONFIG_LOCALVERSION|CONFIG_LOCALVERSION_AUTO' \
+            output/kernel.config || true
+
+      - name: Upload config only
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-config-only
+          path: output/kernel.config
+          retention-days: 7
