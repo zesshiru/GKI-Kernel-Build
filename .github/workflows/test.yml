@@ -79,31 +79,43 @@ jobs:
           cd android-kernel/common
           patch -p1 < ../../patches/${{ inputs.kabi_patch }}
 
-      # ---------- MERGE CONFIG (pakai tool resmi kernel, bukan cat mentah) ----------
-      - name: Merge Droidspace fragment via merge_config.sh
+      # ---------- MERGE CONFIG: murni teks, TIDAK invoke `make` ----------
+      - name: Merge Droidspace fragment (safe text-level merge)
         run: |
-          cd android-kernel/common
-          DEFCONFIG_REL=arch/arm64/configs/gki_defconfig
-          FRAGMENT=$(pwd)/../../configs/droidspace.fragment
+          DEFCONFIG=android-kernel/common/arch/arm64/configs/gki_defconfig
+          FRAGMENT=configs/droidspace.fragment
+          cp "$DEFCONFIG" "${DEFCONFIG}.orig"
 
-          cp "$DEFCONFIG_REL" "${DEFCONFIG_REL}.orig"
+          python3 - "$DEFCONFIG" "$FRAGMENT" << 'EOF'
+          import re, sys
 
-          mkdir -p /tmp/mergeout
-          # -m : cuma merge textual fragment, gak jalanin `make` (aman, gak butuh clang)
-          scripts/kconfig/merge_config.sh -O /tmp/mergeout -m "$DEFCONFIG_REL" "$FRAGMENT"
+          def_path, frag_path = sys.argv[1], sys.argv[2]
 
-          # Resolve dependency antar-Kconfig pakai host gcc (gak butuh clang/cross toolchain,
-          # cuma metadata Kconfig, bukan kompilasi kernel beneran)
-          make ARCH=arm64 O=/tmp/mergeout olddefconfig
-          make ARCH=arm64 O=/tmp/mergeout savedefconfig
+          def get_key(l):
+              m = re.match(r'^(CONFIG_[A-Za-z0-9_]+)=', l)
+              if m: return m.group(1)
+              m = re.match(r'^# (CONFIG_[A-Za-z0-9_]+) is not set', l)
+              if m: return m.group(1)
+              return None
 
-          cp /tmp/mergeout/defconfig "$DEFCONFIG_REL"
+          with open(def_path) as f:
+              base = f.readlines()
+          with open(frag_path) as f:
+              frag = [l for l in f.readlines() if get_key(l)]
 
-          echo "=== DIFF hasil merge vs original ==="
-          diff "${DEFCONFIG_REL}.orig" "$DEFCONFIG_REL" || true
+          frag_keys = {get_key(l) for l in frag}
+          new_base = [l for l in base if get_key(l) not in frag_keys]
 
-          echo "=== Sanity check symbol trimming & sign enforcement ==="
-          grep -E "TRIM_UNUSED_KSYMS|MODULE_SIG_FORCE|RFKILL|INPUT_FF|SND_SOC" "$DEFCONFIG_REL" || true
+          with open(def_path, 'w') as f:
+              f.writelines(new_base)
+              f.write("\n# --- Droidspace fragment (merged, text-level) ---\n")
+              f.writelines(frag)
+
+          print(f"Merged {len(frag_keys)} keys from fragment.")
+          EOF
+
+          echo "=== DIFF ==="
+          diff "${DEFCONFIG}.orig" "$DEFCONFIG" || true
 
       - name: Build kernel (Bazel + cache)
         run: |
