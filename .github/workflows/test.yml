@@ -1,4 +1,4 @@
-name: NEW! Build GKI 6.6.77 + Droidspace
+name: 1000 Slop Later.. Build GKI 6.6.77 + Droidspace
 
 on:
   workflow_dispatch:
@@ -92,17 +92,22 @@ jobs:
       - name: Apply Droidspace kABI patch
         run: |
           cd android-kernel/common
-          # cek dulu biar gak double-apply kalau source di-cache dari run sebelumnya
-          if ! patch -p1 --dry-run < ../../patches/${{ inputs.kabi_patch }} > /dev/null 2>&1; then
-            echo "Patch sudah/tidak bisa diterapkan (mungkin sudah ter-apply dari cache). Skip."
-          else
+          if patch -p1 --dry-run < ../../patches/${{ inputs.kabi_patch }} > /dev/null 2>&1; then
             patch -p1 < ../../patches/${{ inputs.kabi_patch }}
+            echo "Patch diterapkan."
+          elif patch -p1 -R --dry-run < ../../patches/${{ inputs.kabi_patch }} > /dev/null 2>&1; then
+            echo "Patch sudah ter-apply (dari cache source). Skip."
+          else
+            echo "::error::Patch GAGAL diterapkan. Cek isi patches/${{ inputs.kabi_patch }}"
+            exit 1
           fi
 
       - name: Merge Droidspace fragment (safe text-level merge)
         run: |
           DEFCONFIG=android-kernel/common/arch/arm64/configs/gki_defconfig
           FRAGMENT=configs/droidspace.fragment
+          # restore original kalau source dari cache (biar gak merge dobel)
+          if [ -f "${DEFCONFIG}.orig" ]; then cp "${DEFCONFIG}.orig" "$DEFCONFIG"; fi
           cp "$DEFCONFIG" "${DEFCONFIG}.orig"
 
           python3 - "$DEFCONFIG" "$FRAGMENT" << 'EOF'
@@ -136,11 +141,59 @@ jobs:
           echo "=== DIFF ==="
           diff "${DEFCONFIG}.orig" "$DEFCONFIG" || true
 
-      - name: Build kernel (Bazel + cache)
+      # ---------- DIAGNOSTIC: "grep online", hasil dibaca di log Actions ----------
+      - name: Diagnostic - dump info kleaf/KMI (baca di log, tidak perlu download)
+        run: |
+          cd android-kernel
+          echo "::group::Flag kleaf yang tersedia (build/kernel/kleaf/BUILD.bazel)"
+          grep -n -B1 -A3 -E 'name = "(trim|kmi_symbol_list_strict_mode|lto|kasan|debug)"' \
+            build/kernel/kleaf/BUILD.bazel || echo "tidak ditemukan"
+          echo "::endgroup::"
+
+          echo "::group::Flag alias di bazelrc kleaf"
+          grep -rn "flag_alias" build/kernel/kleaf/*.bazelrc 2>/dev/null || echo "tidak ditemukan"
+          echo "::endgroup::"
+
+          echo "::group::grep common/BUILD.bazel untuk kmi/trim/strict"
+          grep -n -B2 -A6 -iE "kmi_symbol_list|trim_nonlisted|strict_mode" common/BUILD.bazel \
+            || echo "tidak ditemukan (kernel_aarch64 didefinisikan via define_common_kernels di kleaf)"
+          echo "::endgroup::"
+
+          echo "::group::gki_defconfig final - baris relevan"
+          grep -E "TRIM_UNUSED_KSYMS|UNUSED_SYMBOLS|MODULE_SIG|SYSVIPC|IPC_NS|IP_SET" \
+            common/arch/arm64/configs/gki_defconfig || true
+          echo "::endgroup::"
+
+      - name: Build kernel (Bazel + cache, trim & KMI strict dimatikan)
         run: |
           cd android-kernel
           mkdir -p "$BAZEL_DISK_CACHE" "$BAZEL_REPO_CACHE"
+
+          KLEAF_BUILD=build/kernel/kleaf/BUILD.bazel
+          EXTRA_FLAGS="--norun_validations"
+
+          # Matikan trimming di level kleaf (ini yang nimpa CONFIG_TRIM_UNUSED_KSYMS dari defconfig)
+          if grep -rq "flag_alias=trim=" build/kernel/kleaf/*.bazelrc 2>/dev/null; then
+            EXTRA_FLAGS="$EXTRA_FLAGS --notrim"
+          elif grep -q 'name = "trim"' "$KLEAF_BUILD"; then
+            EXTRA_FLAGS="$EXTRA_FLAGS --//build/kernel/kleaf:trim=false"
+          else
+            echo "::warning::flag trim tidak ditemukan, lanjut tanpa --notrim"
+          fi
+
+          # Matikan check strict KMI symbol list
+          if grep -rq "flag_alias=kmi_symbol_list_strict_mode=" build/kernel/kleaf/*.bazelrc 2>/dev/null; then
+            EXTRA_FLAGS="$EXTRA_FLAGS --nokmi_symbol_list_strict_mode"
+          elif grep -q 'name = "kmi_symbol_list_strict_mode"' "$KLEAF_BUILD"; then
+            EXTRA_FLAGS="$EXTRA_FLAGS --//build/kernel/kleaf:kmi_symbol_list_strict_mode=false"
+          else
+            echo "::warning::flag kmi_symbol_list_strict_mode tidak ditemukan, andalkan --norun_validations"
+          fi
+
+          echo "=== EXTRA_FLAGS: $EXTRA_FLAGS ==="
+
           tools/bazel build --config=fast --lto=${{ inputs.lto_mode }} \
+            $EXTRA_FLAGS \
             --disk_cache="$BAZEL_DISK_CACHE" \
             --repository_cache="$BAZEL_REPO_CACHE" \
             //common:kernel_aarch64_dist
@@ -148,6 +201,8 @@ jobs:
       - name: Locate build output
         run: |
           find android-kernel/bazel-bin -maxdepth 6 -iname "Image" | tee found_outputs.txt
+          echo "=== Isi found_outputs.txt ==="
+          cat found_outputs.txt
 
       - name: Upload Image artifact
         uses: actions/upload-artifact@v4
