@@ -1,0 +1,59 @@
+name: Build GKI 6.6.77 + Droidspace
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_commit:
+        description: 'Commit hash ACK persis (dari KMI device)'
+        default: 'f9a1d4bd8353'
+      kabi_patch:
+        description: 'Nama file patch kABI di folder patches/'
+        default: '001-fix-sysvipc-kabi.patch'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo (patch & config files)
+        uses: actions/checkout@v4
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison flex libssl-dev libelf-dev \
+            build-essential python3 python3-pip
+
+      - name: Clone exact ACK commit
+        run: |
+          mkdir kernel_src && cd kernel_src
+          git init
+          git remote add origin https://android.googlesource.com/kernel/common
+          git fetch --depth=1 origin ${{ github.event.inputs.kernel_commit }}
+          git checkout FETCH_HEAD
+
+      - name: Apply Droidspace kABI patch
+        run: |
+          cd kernel_src
+          patch -p1 < ../patches/${{ github.event.inputs.kabi_patch }}
+
+      - name: Merge Droidspace config into gki_defconfig
+        run: |
+          cat configs/droidspace.fragment >> kernel_src/arch/arm64/configs/gki_defconfig
+
+      - name: Build kernel
+        run: |
+          cd kernel_src
+          tools/bazel build --config=fast //common:kernel_aarch64_dist
+
+      - name: Locate build output
+        run: |
+          find kernel_src/bazel-bin -maxdepth 6 -iname "Image" -o -iname "Image.gz" | tee found_outputs.txt
+
+      - name: Upload Image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-image-${{ github.event.inputs.kernel_commit }}
+          path: |
+            kernel_src/bazel-bin/common/kernel_aarch64/kernel_aarch64/Image
+          if-no-files-found: warn
+          retention-days: 14
