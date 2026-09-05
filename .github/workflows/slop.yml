@@ -4,443 +4,524 @@ on:
   workflow_dispatch:
     inputs:
       manifest_branch:
-        description: 'Branch manifest kernel'
-        default: 'common-android15-6.6-2025-03'
+        description: "Kernel manifest branch"
         required: true
+        default: "common-android15-6.6-2025-03"
 
       kabi_patch:
-        description: 'Nama file patch kABI di folder patches/'
-        default: '001-fix-sysvipc-kabi.patch'
+        description: "DroidSpaces SYSVIPC kABI patch"
         required: true
+        default: "001-fix-sysvipc-kabi.patch"
 
       lto_mode:
-        description: 'LTO mode'
+        description: "LTO mode"
+        required: true
         type: choice
         options:
           - none
           - thin
         default: none
-        required: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      # ------------------------------------------------------------
-      # 1. Checkout repository
-      # ------------------------------------------------------------
-      - name: Checkout repo
+      # ============================================================
+      # CHECKOUT
+      # ============================================================
+
+      - name: Checkout workflow repository
         uses: actions/checkout@v4
 
-      # ------------------------------------------------------------
-      # 2. Build dependencies
-      # ------------------------------------------------------------
-      - name: Install build dependencies
+      # ============================================================
+      # INSTALL DEPENDENCIES
+      # ============================================================
+
+      - name: Install dependencies
         run: |
           sudo apt-get update
 
           sudo apt-get install -y \
-            git-core \
-            gnupg \
-            flex \
-            bison \
-            build-essential \
-            zip \
+            git \
             curl \
-            zlib1g-dev \
-            libc6-dev-i386 \
-            x11proto-core-dev \
-            libx11-dev \
-            lib32z1-dev \
-            libgl1-mesa-dev \
-            libxml2-utils \
-            xsltproc \
-            unzip \
-            fontconfig \
+            wget \
             python3 \
             python3-pip \
             bc \
+            bison \
+            flex \
+            build-essential \
+            clang \
+            lld \
+            llvm \
             libssl-dev \
             libelf-dev \
-            pahole
+            libdw-dev \
+            libncurses-dev \
+            rsync \
+            unzip \
+            zip \
+            cpio \
+            pahole \
+            dwarves \
+            zstd \
+            xz-utils \
+            lz4 \
+            jq
 
-      # ------------------------------------------------------------
-      # 3. Install repo
-      # ------------------------------------------------------------
+      # ============================================================
+      # INSTALL REPO
+      # ============================================================
+
       - name: Install repo tool
         run: |
-          mkdir -p "$HOME/bin"
+          mkdir -p "${HOME}/bin"
 
           curl -L \
             https://storage.googleapis.com/git-repo-downloads/repo \
-            -o "$HOME/bin/repo"
+            -o "${HOME}/bin/repo"
 
-          chmod a+x "$HOME/bin/repo"
+          chmod +x "${HOME}/bin/repo"
 
-          echo "$HOME/bin" >> "$GITHUB_PATH"
+          echo "${HOME}/bin" >> "${GITHUB_PATH}"
 
-      # ------------------------------------------------------------
-      # 4. Git identity
-      # ------------------------------------------------------------
-      - name: Configure git identity
+          repo --version
+
+      # ============================================================
+      # GIT CONFIG
+      # ============================================================
+
+      - name: Configure git
         run: |
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
 
-      # ------------------------------------------------------------
-      # 5. Init Android GKI manifest
-      # ------------------------------------------------------------
-      - name: Init kernel manifest
+      # ============================================================
+      # INIT KERNEL SOURCE
+      # ============================================================
+
+      - name: Initialize Android kernel repository
         run: |
           mkdir -p android-kernel
-
           cd android-kernel
 
           repo init \
-            --depth=1 \
             -u https://android.googlesource.com/kernel/manifest \
-            -b "${{ github.event.inputs.manifest_branch }}"
+            -b "${{ github.event.inputs.manifest_branch }}" \
+            --depth=1
 
-      # ------------------------------------------------------------
-      # 6. Sync source
-      # ------------------------------------------------------------
+      # ============================================================
+      # SYNC SOURCE
+      # ============================================================
+
       - name: Sync kernel source
         run: |
           cd android-kernel
 
-          FORMATTED_BRANCH="${{ github.event.inputs.manifest_branch }}"
-          FORMATTED_BRANCH="${FORMATTED_BRANCH#common-}"
-
-          REMOTE_BRANCH="$(
-            git ls-remote \
-              https://android.googlesource.com/kernel/common \
-              "${FORMATTED_BRANCH}"
-          )"
-
-          DEFAULT_MANIFEST_PATH=".repo/manifests/default.xml"
-
-          if grep -q deprecated <<< "$REMOTE_BRANCH"; then
-            echo "Branch deprecated."
-
-            sed -i \
-              "s/\"${FORMATTED_BRANCH}\"/\"deprecated\/${FORMATTED_BRANCH}\"/g" \
-              "$DEFAULT_MANIFEST_PATH"
-          fi
-
           repo sync \
             -c \
-            -j"$(nproc --all)" \
+            --no-clone-bundle \
             --no-tags \
-            --fail-fast
+            --optimized-fetch \
+            --prune \
+            -j"$(nproc)"
 
-      # ------------------------------------------------------------
-      # 7. Show exact source revision
-      # ------------------------------------------------------------
-      - name: Show kernel source revision
+      # ============================================================
+      # SHOW SOURCE REVISION
+      # ============================================================
+
+      - name: Show source revision
+        run: |
+          cd android-kernel
+
+          echo "=========================================="
+          echo "Kernel source revision"
+          echo "=========================================="
+
+          repo manifest -r | head -100
+
+          echo
+          echo "common revision:"
+          git -C common rev-parse HEAD
+
+          echo
+          echo "common status:"
+          git -C common status --short
+
+      # ============================================================
+      # BYPASS STRICT DEFCONFIG CHECK
+      # ============================================================
+
+      - name: Bypass strict defconfig check
         run: |
           cd android-kernel/common
 
-          echo "=== HEAD ==="
-          git log -1 --oneline
+          echo "Before:"
+          grep -n "check_defconfig" build.config.gki || true
+
+          sed -i '/check_defconfig/d' build.config.gki
 
           echo
-          echo "=== STATUS ==="
-          git status --short
+          echo "After:"
+          grep -n "check_defconfig" build.config.gki || true
 
-          echo
-          echo "=== KERNEL VERSION ==="
-          make kernelversion || true
+      # ============================================================
+      # APPLY DROIDSPACES KABI PATCH
+      # ============================================================
 
-      # ------------------------------------------------------------
-      # 8. Bypass strict defconfig check
-      # ------------------------------------------------------------
-      - name: Bypass strict defconfig check
-        run: |
-          sed -i '/check_defconfig/d' \
-            android-kernel/common/build.config.gki
-
-      # ------------------------------------------------------------
-      # 9. Apply DroidSpaces kABI patch
-      # ------------------------------------------------------------
       - name: Apply DroidSpaces kABI patch
         run: |
           cd android-kernel/common
 
-          echo "Applying:"
-          echo "../../patches/${{ github.event.inputs.kabi_patch }}"
+          PATCH="../../patches/${{ github.event.inputs.kabi_patch }}"
 
-          patch \
-            -p1 \
-            < "../../patches/${{ github.event.inputs.kabi_patch }}"
+          echo "=========================================="
+          echo "Applying DroidSpaces kABI patch"
+          echo "=========================================="
+
+          echo "Patch: ${PATCH}"
+
+          if [ ! -f "${PATCH}" ]; then
+            echo "ERROR: Patch not found!"
+            echo "Expected: ${PATCH}"
+            exit 1
+          fi
+
+          patch -p1 < "${PATCH}"
 
           echo
-          echo "=== PATCH STATUS ==="
-          git diff --stat
+          echo "Patch applied successfully."
 
-      # ------------------------------------------------------------
-      # 10. Prepare DroidSpaces config
+      # ============================================================
+      # VERIFY KABI PATCH
+      # ============================================================
+
+      - name: Verify SYSVIPC kABI patch
+        run: |
+          cd android-kernel/common
+
+          echo "=========================================="
+          echo "SYSVIPC kABI patch result"
+          echo "=========================================="
+
+          git diff -- \
+            include/linux/sched.h \
+            build.config.gki \
+            arch/arm64/configs/gki_defconfig || true
+
+      # ============================================================
+      # ENABLE DROIDSPACES CONFIG
       #
-      # IMPORTANT:
-      # Do not simply append the fragment blindly and assume that
-      # the resulting file is the final kernel configuration.
-      # We first make the requested values explicit.
-      # ------------------------------------------------------------
-      - name: Prepare DroidSpaces configuration
+      # Same config set used by Wild Kernel action.yml
+      # ============================================================
+
+      - name: Enable DroidSpaces kernel configs
         run: |
-          cd android-kernel
-
-          DEFCONFIG="common/arch/arm64/configs/gki_defconfig"
-
-          echo "=== DroidSpaces fragment ==="
-          cat "../configs/droidspace.fragment"
-
-          echo
-          echo "=== Module signature compatibility fragment ==="
-          cat "../configs/module-sig-compat.fragment"
-
-          echo
-          echo "=== Existing relevant config ==="
-
-          grep -E \
-            '^(CONFIG_SYSVIPC|CONFIG_POSIX_MQUEUE|CONFIG_IPC_NS|CONFIG_PID_NS|CONFIG_DEVTMPFS|CONFIG_NETFILTER_XT_MATCH_ADDRTYPE|CONFIG_NETFILTER_XT_TARGET_REJECT|CONFIG_NETFILTER_XT_TARGET_LOG|CONFIG_NETFILTER_XT_MATCH_RECENT|CONFIG_IP_SET|CONFIG_IP_SET_HASH_IP|CONFIG_IP_SET_HASH_NET|CONFIG_NETFILTER_XT_SET|CONFIG_TMPFS_POSIX_ACL|CONFIG_TMPFS_XATTR|CONFIG_MODULE_SIG_FORCE)=' \
-            "$DEFCONFIG" || true
-
-          echo
-          echo "=== Applying DroidSpaces config values ==="
+          cd android-kernel/common
 
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
-          path = Path("common/arch/arm64/configs/gki_defconfig")
+          config = Path("arch/arm64/configs/gki_defconfig")
 
-          configs = {
-              "CONFIG_SYSVIPC": "y",
-              "CONFIG_POSIX_MQUEUE": "y",
+          configs = [
+              "CONFIG_PID_NS=y",
+              "CONFIG_SYSVIPC=y",
+              "CONFIG_POSIX_MQUEUE=y",
+              "CONFIG_IPC_NS=y",
+              "CONFIG_DEVTMPFS=y",
+              "CONFIG_BINFMT_MISC=y",
+              "CONFIG_BINFMT_SCRIPT=y",
+              "CONFIG_BINFMT_ELF=y",
+              "CONFIG_USER_NS=y",
+          ]
 
-              "CONFIG_IPC_NS": "y",
-              "CONFIG_PID_NS": "y",
+          names = [line.split("=")[0] for line in configs]
 
-              "CONFIG_DEVTMPFS": "y",
+          text = config.read_text()
 
-              "CONFIG_NETFILTER_XT_MATCH_ADDRTYPE": "y",
+          # Remove existing definitions for controlled configs.
+          for name in names:
+              text = re.sub(
+                  rf"^{re.escape(name)}=.*\n",
+                  "",
+                  text,
+                  flags=re.MULTILINE,
+              )
 
-              "CONFIG_NETFILTER_XT_TARGET_REJECT": "y",
-              "CONFIG_NETFILTER_XT_TARGET_LOG": "y",
-              "CONFIG_NETFILTER_XT_MATCH_RECENT": "y",
+              text = re.sub(
+                  rf"^# {re.escape(name)} is not set\n",
+                  "",
+                  text,
+                  flags=re.MULTILINE,
+              )
 
-              "CONFIG_IP_SET": "y",
-              "CONFIG_IP_SET_HASH_IP": "y",
-              "CONFIG_IP_SET_HASH_NET": "y",
-              "CONFIG_NETFILTER_XT_SET": "y",
+          # Append DroidSpaces configuration.
+          text = text.rstrip() + "\n\n"
 
-              "CONFIG_TMPFS_POSIX_ACL": "y",
-              "CONFIG_TMPFS_XATTR": "y",
-          }
+          for line in configs:
+              text += line + "\n"
 
-          lines = path.read_text().splitlines()
-
-          # Remove previous assignments for the configs we control.
-          filtered = []
-
-          controlled = set(configs)
-
-          for line in lines:
-              stripped = line.strip()
-
-              remove = False
-
-              if stripped.startswith("CONFIG_"):
-                  key = stripped.split("=", 1)[0]
-                  if key in controlled:
-                      remove = True
-
-              if stripped.startswith("# CONFIG_") and stripped.endswith(" is not set"):
-                  key = stripped[2:].split(" ", 1)[0]
-                  if key in controlled:
-                      remove = True
-
-              if not remove:
-                  filtered.append(line)
-
-          # Add exactly one assignment for every requested config.
-          filtered.append("")
-          filtered.append("# DroidSpaces configuration")
-
-          for key, value in configs.items():
-              filtered.append(f"{key}={value}")
-
-          path.write_text("\n".join(filtered) + "\n")
+          config.write_text(text)
           PY
 
-          echo
-          echo "=== Module signature compatibility ==="
+          echo "=========================================="
+          echo "DroidSpaces configs"
+          echo "=========================================="
+
+          grep -E \
+            '^(CONFIG_PID_NS|CONFIG_SYSVIPC|CONFIG_POSIX_MQUEUE|CONFIG_IPC_NS|CONFIG_DEVTMPFS|CONFIG_BINFMT_MISC|CONFIG_BINFMT_SCRIPT|CONFIG_BINFMT_ELF|CONFIG_USER_NS)=' \
+            arch/arm64/configs/gki_defconfig || true
+
+      # ============================================================
+      # MODULE SIGNATURE COMPATIBILITY
+      # ============================================================
+
+      - name: Disable forced module signature
+        run: |
+          cd android-kernel/common
 
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
-          path = Path("common/arch/arm64/configs/gki_defconfig")
-          lines = path.read_text().splitlines()
+          config = Path("arch/arm64/configs/gki_defconfig")
 
-          keys = {"CONFIG_MODULE_SIG_FORCE"}
+          text = config.read_text()
 
-          filtered = []
+          text = re.sub(
+              r"^CONFIG_MODULE_SIG_FORCE=.*\n",
+              "",
+              text,
+              flags=re.MULTILINE,
+          )
 
-          for line in lines:
-              stripped = line.strip()
+          text = re.sub(
+              r"^# CONFIG_MODULE_SIG_FORCE is not set\n",
+              "",
+              text,
+              flags=re.MULTILINE,
+          )
 
-              remove = False
+          text = text.rstrip() + "\n"
+          text += "# CONFIG_MODULE_SIG_FORCE is not set\n"
 
-              if stripped.startswith("CONFIG_"):
-                  key = stripped.split("=", 1)[0]
-                  if key in keys:
-                      remove = True
-
-              if stripped.startswith("# CONFIG_") and stripped.endswith(" is not set"):
-                  key = stripped[2:].split(" ", 1)[0]
-                  if key in keys:
-                      remove = True
-
-              if not remove:
-                  filtered.append(line)
-
-          filtered.append("# CONFIG_MODULE_SIG_FORCE is not set")
-
-          path.write_text("\n".join(filtered) + "\n")
+          config.write_text(text)
           PY
 
-          echo
-          echo "=== Final gki_defconfig entries ==="
+          echo "MODULE_SIG_FORCE:"
+          grep -n "MODULE_SIG_FORCE" \
+            arch/arm64/configs/gki_defconfig || true
 
-          grep -E \
-            '^(CONFIG_SYSVIPC|CONFIG_POSIX_MQUEUE|CONFIG_IPC_NS|CONFIG_PID_NS|CONFIG_DEVTMPFS|CONFIG_NETFILTER_XT_MATCH_ADDRTYPE|CONFIG_NETFILTER_XT_TARGET_REJECT|CONFIG_NETFILTER_XT_TARGET_LOG|CONFIG_NETFILTER_XT_MATCH_RECENT|CONFIG_IP_SET|CONFIG_IP_SET_HASH_IP|CONFIG_IP_SET_HASH_NET|CONFIG_NETFILTER_XT_SET|CONFIG_TMPFS_POSIX_ACL|CONFIG_TMPFS_XATTR)=|^# CONFIG_MODULE_SIG_FORCE is not set' \
-            "$DEFCONFIG"
+      # ============================================================
+      # SHOW FINAL DEFCONFIG CHANGES
+      # ============================================================
 
-      # ------------------------------------------------------------
-      # 11. Build GKI
-      # ------------------------------------------------------------
-      - name: Build GKI kernel
+      - name: Show defconfig changes
+        run: |
+          cd android-kernel/common
+
+          echo "=========================================="
+          echo "gki_defconfig diff"
+          echo "=========================================="
+
+          git diff -- arch/arm64/configs/gki_defconfig
+
+      # ============================================================
+      # BUILD GKI
+      # ============================================================
+
+      - name: Build GKI
         run: |
           cd android-kernel
+
+          echo "=========================================="
+          echo "Building GKI 6.6.77"
+          echo "=========================================="
+
+          echo "Manifest branch:"
+          echo "${{ github.event.inputs.manifest_branch }}"
+
+          echo
+          echo "LTO mode:"
+          echo "${{ github.event.inputs.lto_mode }}"
+
+          echo
+          echo "Starting Bazel build..."
 
           tools/bazel build \
             --config=fast \
             --lto="${{ github.event.inputs.lto_mode }}" \
             //common:kernel_aarch64_dist
 
-      # ------------------------------------------------------------
-      # 12. Locate all important artifacts
-      # ------------------------------------------------------------
+      # ============================================================
+      # LOCATE BUILD OUTPUT
+      # ============================================================
+
       - name: Locate build artifacts
         run: |
           cd android-kernel
 
-          echo "=== Image ==="
-          find bazel-bin \
-            -type f \
-            -name "Image" \
-            -print
+          echo "=========================================="
+          echo "Build artifacts"
+          echo "=========================================="
 
-          echo
-          echo "=== vmlinux ==="
-          find bazel-bin \
+          find bazel-bin/common \
+            -maxdepth 6 \
             -type f \
-            -name "vmlinux" \
-            -print
+            \( \
+              -name "Image" \
+              -o -name "Image.lz4" \
+              -o -name "vmlinux" \
+              -o -name "System.map" \
+              -o -name "Module.symvers" \
+              -o -name ".config" \
+            \) \
+            -print 2>/dev/null || true
 
-          echo
-          echo "=== Module.symvers ==="
-          find bazel-bin \
-            -type f \
-            -name "Module.symvers" \
-            -print
+      # ============================================================
+      # PREPARE KERNEL ARTIFACT
+      # ============================================================
 
-          echo
-          echo "=== System.map ==="
-          find bazel-bin \
-            -type f \
-            -name "System.map" \
-            -print
+      - name: Prepare kernel Image
+        run: |
+          cd android-kernel
 
-          echo
-          echo "=== Kernel config ==="
-          find bazel-bin \
-            -type f \
-            \( -name ".config" -o -name "*config*" \) \
-            -print
+          mkdir -p ../kernel-artifact
 
-      # ------------------------------------------------------------
-      # 13. Save source/build metadata
-      # ------------------------------------------------------------
+          IMAGE=""
+
+          if [ -f bazel-bin/common/kernel_aarch64/Image ]; then
+            IMAGE="bazel-bin/common/kernel_aarch64/Image"
+          elif [ -f bazel-bin/common/kernel_aarch64/Image.lz4 ]; then
+            IMAGE="bazel-bin/common/kernel_aarch64/Image.lz4"
+          else
+            IMAGE="$(find bazel-bin/common \
+              -type f \
+              \( \
+                -name Image \
+                -o -name Image.lz4 \
+              \) \
+              | head -n 1)"
+          fi
+
+          if [ -z "${IMAGE}" ]; then
+            echo "ERROR: Kernel Image not found."
+            exit 1
+          fi
+
+          echo "Found:"
+          echo "${IMAGE}"
+
+          cp "${IMAGE}" ../kernel-artifact/
+
+      # ============================================================
+      # COLLECT BUILD INFO
+      # ============================================================
+
       - name: Collect build metadata
         run: |
-          mkdir -p build-debug
-
           cd android-kernel/common
 
-          echo "=== GIT COMMIT ===" \
-            > ../../build-debug/build-info.txt
+          mkdir -p ../../build-debug
 
-          git rev-parse HEAD \
-            >> ../../build-debug/build-info.txt
+          {
+            echo "=========================================="
+            echo "DroidSpaces GKI Build Information"
+            echo "=========================================="
+            echo
 
-          echo \
-            >> ../../build-debug/build-info.txt
+            echo "Kernel commit:"
+            git rev-parse HEAD
+            echo
 
-          echo "=== GIT STATUS ===" \
-            >> ../../build-debug/build-info.txt
+            echo "Kernel version:"
+            make kernelversion 2>/dev/null || true
+            echo
 
-          git status --short \
-            >> ../../build-debug/build-info.txt
+            echo "Git status:"
+            git status --short
+            echo
 
-          echo \
-            >> ../../build-debug/build-info.txt
+            echo "DroidSpaces configs:"
+            grep -E \
+              '^(CONFIG_PID_NS|CONFIG_SYSVIPC|CONFIG_POSIX_MQUEUE|CONFIG_IPC_NS|CONFIG_DEVTMPFS|CONFIG_BINFMT_MISC|CONFIG_BINFMT_SCRIPT|CONFIG_BINFMT_ELF|CONFIG_USER_NS|CONFIG_MODULE_SIG_FORCE)=' \
+              arch/arm64/configs/gki_defconfig || true
 
-          echo "=== KERNEL VERSION ===" \
-            >> ../../build-debug/build-info.txt
+            echo
+            echo "Git diff:"
+            git diff
 
-          make kernelversion \
-            >> ../../build-debug/build-info.txt \
-            2>&1 || true
+          } > ../../build-debug/build-info.txt
 
-          echo \
-            >> ../../build-debug/build-info.txt
+      # ============================================================
+      # SAVE FINAL DEFCONFIG
+      # ============================================================
 
-          echo "=== PATCH ===" \
-            >> ../../build-debug/build-info.txt
+      - name: Save final defconfig
+        run: |
+          cd android-kernel/common
 
-          git diff \
-            >> ../../build-debug/build-info.txt
+          if [ -f arch/arm64/configs/gki_defconfig ]; then
+            cp \
+              arch/arm64/configs/gki_defconfig \
+              ../../build-debug/gki_defconfig.final
+          fi
 
-          cd ../..
+      # ============================================================
+      # COLLECT DEBUG FILES
+      # ============================================================
 
-          cp \
-            android-kernel/common/arch/arm64/configs/gki_defconfig \
-            build-debug/gki_defconfig.final
+      - name: Collect debug files
+        run: |
+          cd android-kernel
 
-      # ------------------------------------------------------------
-      # 14. Upload Image
-      # ------------------------------------------------------------
-      - name: Upload Image
+          mkdir -p ../build-debug
+
+          find bazel-bin/common \
+            -type f \
+            \( \
+              -name "vmlinux" \
+              -o -name "System.map" \
+              -o -name "Module.symvers" \
+              -o -name ".config" \
+            \) \
+            -exec cp -f {} ../build-debug/ \; \
+            2>/dev/null || true
+
+          echo
+          echo "=========================================="
+          echo "Debug files"
+          echo "=========================================="
+
+          find ../build-debug \
+            -maxdepth 1 \
+            -type f \
+            -printf '%f\n' \
+            | sort
+
+      # ============================================================
+      # UPLOAD KERNEL
+      # ============================================================
+
+      - name: Upload kernel Image
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-image-6.6.77-droidspace
-          path: android-kernel/bazel-bin/common/kernel_aarch64/Image
+          name: GKI-6.6.77-DroidSpaces-${{ github.event.inputs.lto_mode }}
+          path: kernel-artifact/
           if-no-files-found: error
-          retention-days: 14
+          compression-level: 0
 
-      # ------------------------------------------------------------
-      # 15. Upload debugging artifacts
-      # ------------------------------------------------------------
-      - name: Upload build debug artifacts
+      # ============================================================
+      # UPLOAD DEBUG
+      # ============================================================
+
+      - name: Upload build debug
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-build-debug-6.6.77-droidspace
-          path: |
-            build-debug/
-            android-kernel/bazel-bin/**/vmlinux
-            android-kernel/bazel-bin/**/System.map
-            android-kernel/bazel-bin/**/Module.symvers
-            android-kernel/bazel-bin/**/.config
+          name: GKI-6.6.77-DroidSpaces-debug-${{ github.event.inputs.lto_mode }}
+          path: build-debug/
           if-no-files-found: warn
-          retention-days: 14
+          compression-level: 6
