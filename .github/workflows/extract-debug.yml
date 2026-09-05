@@ -49,46 +49,46 @@ jobs:
           echo "=== Isi artifact ==="
           find extracted -type f -printf '%p %s bytes\n'
 
-      - name: Find kernel config
+      - name: Extract final kernel config
         run: |
           mkdir -p output
 
-          CONFIG=$(find extracted -type f \
-            \( -name ".config" -o -name "config" \) \
-            | head -n 1)
+          CONFIG="extracted/build-debug/gki_defconfig.final"
+          BUILDINFO="extracted/build-debug/build-info.txt"
 
-          if [ -z "$CONFIG" ]; then
-            echo "ERROR: .config tidak ditemukan!"
-            echo
-            echo "File yang tersedia:"
-            find extracted -type f
+          if [ ! -f "$CONFIG" ]; then
+            echo "ERROR: gki_defconfig.final tidak ditemukan!"
             exit 1
           fi
 
-          echo "Config ditemukan:"
-          echo "$CONFIG"
+          cp "$CONFIG" output/gki_defconfig.final
 
-          cp "$CONFIG" output/kernel.config
+          if [ -f "$BUILDINFO" ]; then
+            cp "$BUILDINFO" output/build-info.txt
+          fi
+
+          echo "Config ditemukan:"
+          ls -lh output/
 
       - name: Show important configs
         run: |
           echo
           echo "========================================"
-          echo " DROIDSPACES / MODULE CONFIG"
+          echo " DROIDSPACES CONFIG"
           echo "========================================"
 
           grep -E \
             'CONFIG_(SYSVIPC|POSIX_MQUEUE|IPC_NS|PID_NS|DEVTMPFS|NETFILTER_XT_MATCH_ADDRTYPE|NETFILTER_XT_TARGET_REJECT|NETFILTER_XT_TARGET_LOG|NETFILTER_XT_MATCH_RECENT|IP_SET|IP_SET_HASH_IP|IP_SET_HASH_NET|NETFILTER_XT_SET|TMPFS_POSIX_ACL|TMPFS_XATTR|MODULE_SIG|LTO)' \
-            output/kernel.config || true
+            output/gki_defconfig.final || true
 
           echo
           echo "========================================"
-          echo " KERNEL RELEASE"
+          echo " LOCALVERSION"
           echo "========================================"
 
           grep -E \
             'CONFIG_LOCALVERSION|CONFIG_LOCALVERSION_AUTO' \
-            output/kernel.config || true
+            output/gki_defconfig.final || true
 
       - name: Upload config only
         uses: actions/upload-artifact@v4
