@@ -1,0 +1,127 @@
+name: NEW! Build GKI 6.6.77 + Droidspace
+
+on:
+  workflow_dispatch:
+    inputs:
+      manifest_branch:
+        description: 'Branch manifest kernel'
+        default: 'common-android15-6.6-2025-03'
+      kabi_patch:
+        description: 'Nama file patch kABI di folder patches/'
+        default: '001-fix-sysvipc-kabi.patch'
+
+env:
+  BAZEL_DISK_CACHE: ${{ github.workspace }}/.bazel-cache/disk
+  BAZEL_REPO_CACHE: ${{ github.workspace }}/.bazel-cache/repo
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo (patch & config files)
+        uses: actions/checkout@v4
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git-core gnupg flex bison build-essential zip curl \
+            zlib1g-dev libc6-dev-i386 x11proto-core-dev libx11-dev lib32z1-dev \
+            libgl1-mesa-dev libxml2-utils xsltproc unzip fontconfig \
+            python3 python3-pip bc libssl-dev libelf-dev
+
+      - name: Install repo tool
+        run: |
+          mkdir -p ~/bin
+          curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+          chmod a+x ~/bin/repo
+          echo "$HOME/bin" >> $GITHUB_PATH
+
+      - name: Configure git identity
+        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+
+      - name: Restore Bazel cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .bazel-cache/disk
+            .bazel-cache/repo
+          key: bazel-${{ runner.os }}-${{ inputs.manifest_branch }}-${{ hashFiles('patches/**', 'configs/**') }}
+          restore-keys: |
+            bazel-${{ runner.os }}-${{ inputs.manifest_branch }}-
+            bazel-${{ runner.os }}-
+
+      - name: Init kernel manifest
+        run: |
+          mkdir -p android-kernel && cd android-kernel
+          repo init --depth=1 -u https://android.googlesource.com/kernel/manifest \
+            -b ${{ inputs.manifest_branch }}
+
+      - name: Handle deprecated branch, then sync
+        run: |
+          cd android-kernel
+          FORMATTED_BRANCH="${{ inputs.manifest_branch }}"
+          FORMATTED_BRANCH=${FORMATTED_BRANCH#common-}
+          REMOTE_BRANCH=$(git ls-remote https://android.googlesource.com/kernel/common ${FORMATTED_BRANCH})
+          DEFAULT_MANIFEST_PATH=.repo/manifests/default.xml
+          if grep -q deprecated <<< "$REMOTE_BRANCH"; then
+            sed -i "s/\"${FORMATTED_BRANCH}\"/\"deprecated\/${FORMATTED_BRANCH}\"/g" $DEFAULT_MANIFEST_PATH
+          fi
+          repo --trace sync -c -j$(nproc --all) --no-tags --fail-fast
+
+      - name: Bypass strict defconfig check
+        run: |
+          sed -i '/check_defconfig/d' android-kernel/common/build.config.gki
+
+      - name: Apply Droidspace kABI patch
+        run: |
+          cd android-kernel/common
+          patch -p1 < ../../patches/${{ inputs.kabi_patch }}
+
+      # ---------- MERGE CONFIG (pakai tool resmi kernel, bukan cat mentah) ----------
+      - name: Merge Droidspace fragment via merge_config.sh
+        run: |
+          cd android-kernel/common
+          DEFCONFIG_REL=arch/arm64/configs/gki_defconfig
+          FRAGMENT=$(pwd)/../../configs/droidspace.fragment
+
+          cp "$DEFCONFIG_REL" "${DEFCONFIG_REL}.orig"
+
+          mkdir -p /tmp/mergeout
+          # -m : cuma merge textual fragment, gak jalanin `make` (aman, gak butuh clang)
+          scripts/kconfig/merge_config.sh -O /tmp/mergeout -m "$DEFCONFIG_REL" "$FRAGMENT"
+
+          # Resolve dependency antar-Kconfig pakai host gcc (gak butuh clang/cross toolchain,
+          # cuma metadata Kconfig, bukan kompilasi kernel beneran)
+          make ARCH=arm64 O=/tmp/mergeout olddefconfig
+          make ARCH=arm64 O=/tmp/mergeout savedefconfig
+
+          cp /tmp/mergeout/defconfig "$DEFCONFIG_REL"
+
+          echo "=== DIFF hasil merge vs original ==="
+          diff "${DEFCONFIG_REL}.orig" "$DEFCONFIG_REL" || true
+
+          echo "=== Sanity check symbol trimming & sign enforcement ==="
+          grep -E "TRIM_UNUSED_KSYMS|MODULE_SIG_FORCE|RFKILL|INPUT_FF|SND_SOC" "$DEFCONFIG_REL" || true
+
+      - name: Build kernel (Bazel + cache)
+        run: |
+          cd android-kernel
+          mkdir -p "$BAZEL_DISK_CACHE" "$BAZEL_REPO_CACHE"
+          tools/bazel build --config=fast --lto=thin \
+            --disk_cache="$BAZEL_DISK_CACHE" \
+            --repository_cache="$BAZEL_REPO_CACHE" \
+            //common:kernel_aarch64_dist
+
+      - name: Locate build output
+        run: |
+          find android-kernel/bazel-bin -maxdepth 6 -iname "Image" | tee found_outputs.txt
+
+      - name: Upload Image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-image-6.6.77-droidspace
+          path: android-kernel/bazel-bin/common/kernel_aarch64/Image
+          if-no-files-found: warn
+          retention-days: 14
