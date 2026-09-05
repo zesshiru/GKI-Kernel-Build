@@ -1,0 +1,20 @@
+name: Find Name
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Find commit that set SUBLEVEL = 77
+        run: |
+          git clone https://android.googlesource.com/kernel/common kernel_src
+          cd kernel_src
+          echo "=== Mencari commit dengan SUBLEVEL = 77 ==="
+          git log --all --oneline -S"SUBLEVEL = 77" -- Makefile | tee ../found_commits.txt
+
+      - name: Show which branches contain it
+        run: |
+          cd kernel_src
+          while read -r hash rest; do
+            echo "Commit $hash ada di branch:"
+            git branch --all --contains "$hash"
+          done < ../found_commits.txt
