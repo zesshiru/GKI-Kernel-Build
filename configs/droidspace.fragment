@@ -35,14 +35,12 @@ CONFIG_TMPFS_XATTR=y
 
 # ============================================================
 # EXTRA (bukan bagian Droidspace) - fix "Unknown symbol (err -2)"
-# untuk vendor .ko Xiaomi 15 (cfg80211, btpower, haptic AW86xxx,
-# audio WCD/WSA/TFA codec).
+# untuk vendor .ko Xiaomi 15.
 #
-# Root cause: GKI men-trim exported symbol yang gak dipakai
-# in-tree module AOSP (CONFIG_TRIM_UNUSED_KSYMS). Vendor blob
-# Xiaomi butuh symbol itu tapi udah ke-strip pas kamu self-build
-# dari manifest AOSP murni -> insmod gagal -> HAL fallback ke
-# vibration flat & audio rusak & boot lama karena deferred probe.
+# PENTING: JANGAN paksa y/m untuk RFKILL/SND/INPUT dkk - itu bisa
+# bentrok sama module_outs manifest Bazel GKI (lihat error:
+# "Unable to find net/rfkill/rfkill.ko"). Cukup matiin symbol
+# trimming saja, jangan ubah status builtin/module apapun.
 # ============================================================
 # CONFIG_TRIM_UNUSED_KSYMS is not set
 CONFIG_UNUSED_SYMBOLS=y
@@ -50,15 +48,3 @@ CONFIG_UNUSED_SYMBOLS=y
 # Jangan block .ko vendor yang disign pakai key Xiaomi sendiri
 # CONFIG_MODULE_SIG_FORCE is not set
 # CONFIG_MODULE_SIG_ALL is not set
-
-# RFKILL builtin - dependency cfg80211.ko & btpower.ko
-CONFIG_RFKILL=y
-CONFIG_RFKILL_INPUT=y
-
-# Input force-feedback builtin - dependency haptic vendor .ko
-CONFIG_INPUT_FF_MEMLESS=y
-CONFIG_INPUT_MISC=y
-
-# ASoC core builtin - dependency audio codec vendor .ko
-CONFIG_SND=y
-CONFIG_SND_SOC=y
