@@ -23,13 +23,16 @@ jobs:
           sudo apt-get install -y bc bison flex libssl-dev libelf-dev \
             build-essential python3 python3-pip
 
-      - name: Clone exact ACK commit
+      - name: Clone branch and checkout exact commit
         run: |
-          mkdir kernel_src && cd kernel_src
-          git init
-          git remote add origin https://android.googlesource.com/kernel/common
-          git fetch --depth=1 origin ${{ github.event.inputs.kernel_commit }}
-          git checkout FETCH_HEAD
+          git clone --branch android15-6.6 --single-branch \
+            https://android.googlesource.com/kernel/common kernel_src
+          cd kernel_src
+          git checkout ${{ github.event.inputs.kernel_commit }} || {
+            echo "Commit not in this branch history, trying full unshallow..."
+            git fetch --unshallow
+            git checkout ${{ github.event.inputs.kernel_commit }}
+          }
 
       - name: Apply Droidspace kABI patch
         run: |
