@@ -27,6 +27,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+
       # ============================================================
       # CHECKOUT
       # ============================================================
@@ -104,7 +105,7 @@ jobs:
           git config --global user.email "actions@github.com"
 
       # ============================================================
-      # INIT KERNEL SOURCE
+      # INIT ANDROID KERNEL SOURCE
       # ============================================================
 
       - name: Initialize Android kernel repository
@@ -118,20 +119,73 @@ jobs:
             --depth=1
 
       # ============================================================
-      # SYNC SOURCE
+      # FIX DEPRECATED KERNEL BRANCH
+      # ============================================================
+
+      - name: Fix deprecated kernel branch
+        run: |
+          cd android-kernel
+
+          echo "=========================================="
+          echo "Checking kernel branch"
+          echo "=========================================="
+
+          FORMATTED_BRANCH="${{ github.event.inputs.manifest_branch }}"
+
+          # Remove common- prefix
+          FORMATTED_BRANCH="${FORMATTED_BRANCH#common-}"
+
+          echo "Formatted branch:"
+          echo "${FORMATTED_BRANCH}"
+
+          DEFAULT_MANIFEST_PATH=".repo/manifests/default.xml"
+
+          REMOTE_BRANCH="$(
+            git ls-remote \
+              https://android.googlesource.com/kernel/common \
+              "${FORMATTED_BRANCH}"
+          )"
+
+          echo
+          echo "Remote branch lookup:"
+          echo "${REMOTE_BRANCH}"
+
+          if grep -q deprecated <<< "${REMOTE_BRANCH}"; then
+            echo
+            echo "Found deprecated branch:"
+            echo "${FORMATTED_BRANCH}"
+
+            sed -i \
+              "s/\"${FORMATTED_BRANCH}\"/\"deprecated\/${FORMATTED_BRANCH}\"/g" \
+              "${DEFAULT_MANIFEST_PATH}"
+
+            echo
+            echo "Manifest after deprecated fix:"
+            grep -n \
+              "deprecated/${FORMATTED_BRANCH}" \
+              "${DEFAULT_MANIFEST_PATH}" || true
+          else
+            echo
+            echo "Branch is not marked deprecated."
+          fi
+
+      # ============================================================
+      # SYNC KERNEL SOURCE
       # ============================================================
 
       - name: Sync kernel source
         run: |
           cd android-kernel
 
-          repo sync \
+          echo "=========================================="
+          echo "Syncing kernel source"
+          echo "=========================================="
+
+          repo --trace sync \
             -c \
-            --no-clone-bundle \
+            -j"$(nproc --all)" \
             --no-tags \
-            --optimized-fetch \
-            --prune \
-            -j"$(nproc)"
+            --fail-fast
 
       # ============================================================
       # SHOW SOURCE REVISION
@@ -186,11 +240,13 @@ jobs:
           echo "Applying DroidSpaces kABI patch"
           echo "=========================================="
 
-          echo "Patch: ${PATCH}"
+          echo "Patch:"
+          echo "${PATCH}"
 
           if [ ! -f "${PATCH}" ]; then
             echo "ERROR: Patch not found!"
-            echo "Expected: ${PATCH}"
+            echo "Expected:"
+            echo "${PATCH}"
             exit 1
           fi
 
@@ -318,11 +374,12 @@ jobs:
           PY
 
           echo "MODULE_SIG_FORCE:"
-          grep -n "MODULE_SIG_FORCE" \
+          grep -n \
+            "MODULE_SIG_FORCE" \
             arch/arm64/configs/gki_defconfig || true
 
       # ============================================================
-      # SHOW FINAL DEFCONFIG CHANGES
+      # SHOW DEFCONFIG CHANGES
       # ============================================================
 
       - name: Show defconfig changes
@@ -388,7 +445,7 @@ jobs:
             -print 2>/dev/null || true
 
       # ============================================================
-      # PREPARE KERNEL ARTIFACT
+      # PREPARE KERNEL IMAGE
       # ============================================================
 
       - name: Prepare kernel Image
@@ -401,8 +458,10 @@ jobs:
 
           if [ -f bazel-bin/common/kernel_aarch64/Image ]; then
             IMAGE="bazel-bin/common/kernel_aarch64/Image"
+
           elif [ -f bazel-bin/common/kernel_aarch64/Image.lz4 ]; then
             IMAGE="bazel-bin/common/kernel_aarch64/Image.lz4"
+
           else
             IMAGE="$(find bazel-bin/common \
               -type f \
@@ -418,7 +477,7 @@ jobs:
             exit 1
           fi
 
-          echo "Found:"
+          echo "Found kernel image:"
           echo "${IMAGE}"
 
           cp "${IMAGE}" ../kernel-artifact/
@@ -437,6 +496,14 @@ jobs:
             echo "=========================================="
             echo "DroidSpaces GKI Build Information"
             echo "=========================================="
+            echo
+
+            echo "Manifest branch:"
+            echo "${{ github.event.inputs.manifest_branch }}"
+            echo
+
+            echo "LTO mode:"
+            echo "${{ github.event.inputs.lto_mode }}"
             echo
 
             echo "Kernel commit:"
