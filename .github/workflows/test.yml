@@ -9,6 +9,11 @@ on:
       kabi_patch:
         description: 'Nama file patch kABI di folder patches/'
         default: '001-fix-sysvipc-kabi.patch'
+      lto_mode:
+        description: 'LTO mode (none = build cepat buat testing, thin = build final)'
+        type: choice
+        options: ['none', 'thin']
+        default: 'none'
 
 env:
   BAZEL_DISK_CACHE: ${{ github.workspace }}/.bazel-cache/disk
@@ -41,7 +46,7 @@ jobs:
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
 
-      - name: Restore Bazel cache
+      - name: Restore Bazel build cache
         uses: actions/cache@v4
         with:
           path: |
@@ -52,11 +57,21 @@ jobs:
             bazel-${{ runner.os }}-${{ inputs.manifest_branch }}-
             bazel-${{ runner.os }}-
 
+      - name: Restore kernel source cache (mempercepat repo sync)
+        uses: actions/cache@v4
+        with:
+          path: android-kernel
+          key: kernel-src-${{ inputs.manifest_branch }}-${{ github.run_id }}
+          restore-keys: |
+            kernel-src-${{ inputs.manifest_branch }}-
+
       - name: Init kernel manifest
         run: |
           mkdir -p android-kernel && cd android-kernel
-          repo init --depth=1 -u https://android.googlesource.com/kernel/manifest \
-            -b ${{ inputs.manifest_branch }}
+          if [ ! -d .repo ]; then
+            repo init --depth=1 -u https://android.googlesource.com/kernel/manifest \
+              -b ${{ inputs.manifest_branch }}
+          fi
 
       - name: Handle deprecated branch, then sync
         run: |
@@ -77,9 +92,13 @@ jobs:
       - name: Apply Droidspace kABI patch
         run: |
           cd android-kernel/common
-          patch -p1 < ../../patches/${{ inputs.kabi_patch }}
+          # cek dulu biar gak double-apply kalau source di-cache dari run sebelumnya
+          if ! patch -p1 --dry-run < ../../patches/${{ inputs.kabi_patch }} > /dev/null 2>&1; then
+            echo "Patch sudah/tidak bisa diterapkan (mungkin sudah ter-apply dari cache). Skip."
+          else
+            patch -p1 < ../../patches/${{ inputs.kabi_patch }}
+          fi
 
-      # ---------- MERGE CONFIG: murni teks, TIDAK invoke `make` ----------
       - name: Merge Droidspace fragment (safe text-level merge)
         run: |
           DEFCONFIG=android-kernel/common/arch/arm64/configs/gki_defconfig
@@ -121,7 +140,7 @@ jobs:
         run: |
           cd android-kernel
           mkdir -p "$BAZEL_DISK_CACHE" "$BAZEL_REPO_CACHE"
-          tools/bazel build --config=fast --lto=thin \
+          tools/bazel build --config=fast --lto=${{ inputs.lto_mode }} \
             --disk_cache="$BAZEL_DISK_CACHE" \
             --repository_cache="$BAZEL_REPO_CACHE" \
             //common:kernel_aarch64_dist
