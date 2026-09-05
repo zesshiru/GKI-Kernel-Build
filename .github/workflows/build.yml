@@ -9,6 +9,11 @@ on:
       kabi_patch:
         description: 'Nama file patch kABI di folder patches/'
         default: '001-fix-sysvipc-kabi.patch'
+      lto_mode:
+        description: 'LTO mode (none = build cepat buat testing, thin = build final)'
+        type: choice
+        options: ['none', 'thin']
+        default: 'none'
 
 jobs:
   build:
@@ -59,26 +64,30 @@ jobs:
       - name: Bypass strict defconfig check
         run: |
           sed -i '/check_defconfig/d' android-kernel/common/build.config.gki
-          echo "Isi build.config.gki setelah dibersihkan:"
-          cat android-kernel/common/build.config.gki
 
       - name: Apply Droidspace kABI patch
         run: |
           cd android-kernel/common
           patch -p1 < ../../patches/${{ github.event.inputs.kabi_patch }}
 
-      - name: Merge Droidspace config into gki_defconfig
+      - name: Merge Droidspace config + module signature compat fix
         run: |
-          cat configs/droidspace.fragment >> android-kernel/common/arch/arm64/configs/gki_defconfig
+          DEFCONFIG=android-kernel/common/arch/arm64/configs/gki_defconfig
+          cat configs/droidspace.fragment >> "$DEFCONFIG"
+          cat configs/module-sig-compat.fragment >> "$DEFCONFIG"
+          echo "=== Isi tambahan di akhir gki_defconfig ==="
+          tail -n 30 "$DEFCONFIG"
 
       - name: Build kernel (Bazel)
         run: |
           cd android-kernel
-          tools/bazel build --config=fast --lto=thin //common:kernel_aarch64_dist
+          tools/bazel build --config=fast --lto=${{ github.event.inputs.lto_mode }} //common:kernel_aarch64_dist
 
       - name: Locate build output
         run: |
-          find android-kernel/bazel-bin -maxdepth 6 -iname "Image" -o -iname "Image.gz" | tee found_outputs.txt
+          find android-kernel/bazel-bin -maxdepth 6 -iname "Image" | tee found_outputs.txt
+          echo "=== Isi found_outputs.txt ==="
+          cat found_outputs.txt
 
       - name: Upload Image artifact
         uses: actions/upload-artifact@v4
