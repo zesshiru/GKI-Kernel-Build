@@ -65,6 +65,11 @@ jobs:
         run: |
           cat configs/droidspace.fragment >> android-kernel/common/arch/arm64/configs/gki_defconfig
 
+      - name: Regenerate defconfig to canonical (minimized) form
+        run: |
+          cd android-kernel
+          tools/bazel run //common:kernel_aarch64_config -- savedefconfig
+
       - name: Build kernel (Bazel)
         run: |
           cd android-kernel
