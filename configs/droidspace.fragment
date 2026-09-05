@@ -32,24 +32,3 @@ CONFIG_NETFILTER_XT_SET=y
 # For NixOS support
 CONFIG_TMPFS_POSIX_ACL=y
 CONFIG_TMPFS_XATTR=y
-
-# ============================================================
-# EXTRA (bukan bagian Droidspace) - fix "Unknown symbol (err -2)"
-# untuk vendor .ko Xiaomi 15.
-#
-# PENTING: JANGAN paksa y/m untuk RFKILL/SND/INPUT dkk - itu bisa
-# bentrok sama module_outs manifest Bazel GKI (lihat error:
-# "Unable to find net/rfkill/rfkill.ko"). Cukup matiin symbol
-# trimming saja, jangan ubah status builtin/module apapun.
-# ============================================================
-# CONFIG_TRIM_UNUSED_KSYMS is not set
-CONFIG_UNUSED_SYMBOLS=y
-
-# Jangan block .ko vendor yang disign pakai key Xiaomi sendiri
-# CONFIG_MODULE_SIG_FORCE is not set
-# CONFIG_MODULE_SIG_ALL is not set
-
-# Disable KUnit & test modules (Fix KMI symbol list violations)
-CONFIG_KUNIT=n
-CONFIG_RUNTIME_TESTING_MENU=n
-CONFIG_NET_9P=n
