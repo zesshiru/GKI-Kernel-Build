@@ -86,6 +86,12 @@ jobs:
 
           echo "${HOME}/bin" >> "${GITHUB_PATH}"
 
+          export PATH="${HOME}/bin:${PATH}"
+
+          echo "repo location:"
+          command -v repo
+
+          echo "repo version:"
           repo --version
 
       # ============================================================
